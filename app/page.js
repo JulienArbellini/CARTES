@@ -301,7 +301,7 @@ export default function Page() {
     if (!created) return;
   }
 
-  function buildFromAssignments(assignments) {
+  function buildFromAssignments(assignments, modeOverride = null) {
     if (!inputGeojson) {
       setError('Importe un GeoJSON avant de generer.');
       return null;
@@ -309,6 +309,8 @@ export default function Page() {
 
     setError('');
     setPublishState({ loading: false, error: '', data: null });
+
+    const effectiveMergeMode = modeOverride || mergeMode;
 
     try {
       const built = buildSuperRegions({
@@ -318,7 +320,7 @@ export default function Page() {
         targetField,
         normalize,
         onMissing,
-        mergeMode
+        mergeMode: effectiveMergeMode
       });
 
       setResult(built);
@@ -592,6 +594,31 @@ export default function Page() {
             />
             <span>Normaliser les labels</span>
           </label>
+        </div>
+
+        <div className="actions">
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => {
+              setMergeMode('dissolve');
+              buildFromAssignments(rules, 'dissolve');
+            }}
+            disabled={!inputGeojson}
+          >
+            Tester fusion geometrique (dissolve)
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => {
+              setMergeMode('assign-only');
+              buildFromAssignments(rules, 'assign-only');
+            }}
+            disabled={!inputGeojson}
+          >
+            Revenir en assign-only
+          </button>
         </div>
 
         <datalist id="region-options">
