@@ -1,18 +1,50 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import GeoPreviewMap from './components/GeoPreviewMap';
 import {
   buildSuperRegions,
   extractPropertyFields,
-  extractRegionValues
+  extractRegionValues,
+  normalizeLabel
 } from '../lib/super-regions';
 
+const PALETTE = [
+  '#eab308',
+  '#22c55e',
+  '#06b6d4',
+  '#3b82f6',
+  '#a855f7',
+  '#f97316',
+  '#ef4444',
+  '#10b981',
+  '#14b8a6',
+  '#8b5cf6'
+];
+
+function hashCode(value) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash << 5) - hash + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function colorForGroup(groupName) {
+  const label = String(groupName || '').trim();
+  if (!label) return '#ded6ca';
+  return PALETTE[hashCode(label) % PALETTE.length];
+}
+
 function safeFilename(name) {
-  return String(name || 'super_regions')
-    .replace(/\.[^/.]+$/, '')
-    .replace(/[^a-zA-Z0-9_-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .toLowerCase() || 'super_regions';
+  return (
+    String(name || 'super_regions')
+      .replace(/\.[^/.]+$/, '')
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .toLowerCase() || 'super_regions'
+  );
 }
 
 function downloadJson(data, filename) {
@@ -25,6 +57,14 @@ function downloadJson(data, filename) {
   URL.revokeObjectURL(url);
 }
 
+function makeRule(source = '', target = '') {
+  const id =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random()}`;
+  return { id, source, target };
+}
+
 export default function Page() {
   const [inputGeojson, setInputGeojson] = useState(null);
   const [inputFilename, setInputFilename] = useState('');
@@ -35,8 +75,7 @@ export default function Page() {
   const [normalize, setNormalize] = useState(true);
   const [onMissing, setOnMissing] = useState('keep-source');
 
-  const [rules, setRules] = useState([{ id: 1, source: '', target: '' }]);
-  const [nextRuleId, setNextRuleId] = useState(2);
+  const [rules, setRules] = useState([makeRule('', '')]);
 
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
@@ -45,6 +84,13 @@ export default function Page() {
   const [publishPath, setPublishPath] = useState('generated/super_regions.geojson');
   const [commitMessage, setCommitMessage] = useState('chore: add generated super-regions geojson');
   const [publishState, setPublishState] = useState({ loading: false, error: '', data: null });
+
+  const [selectedRegion, setSelectedRegion] = useState('');
+  const [quickTarget, setQuickTarget] = useState('');
+
+  const [aiStyle, setAiStyle] = useState('geographic');
+  const [aiGroupCount, setAiGroupCount] = useState(4);
+  const [aiState, setAiState] = useState({ loading: false, error: '', notes: '' });
 
   const regions = useMemo(() => {
     if (!inputGeojson) return [];
@@ -59,6 +105,39 @@ export default function Page() {
     () => rules.filter((row) => String(row.source).trim() && String(row.target).trim()).length,
     [rules]
   );
+
+  const assignmentLookup = useMemo(() => {
+    const map = new Map();
+
+    for (const row of rules) {
+      const source = String(row.source || '').trim();
+      const target = String(row.target || '').trim();
+      if (!source || !target) continue;
+
+      const key = normalize ? normalizeLabel(source) : source;
+      map.set(key, target);
+    }
+
+    return map;
+  }, [rules, normalize]);
+
+  const groupedLegend = useMemo(() => {
+    const names = new Set();
+
+    for (const row of rules) {
+      const target = String(row.target || '').trim();
+      if (target) names.add(target);
+    }
+
+    if (result?.outputGeojson?.features) {
+      for (const feature of result.outputGeojson.features) {
+        const target = String(feature?.properties?.[targetField] || '').trim();
+        if (target) names.add(target);
+      }
+    }
+
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [rules, result, targetField]);
 
   useEffect(() => {
     if (!inputGeojson) return;
@@ -83,8 +162,9 @@ export default function Page() {
     if (!file) return;
 
     setError('');
-    setStatus('Reading file...');
+    setStatus('Lecture du fichier...');
     setResult(null);
+    setAiState({ loading: false, error: '', notes: '' });
     setPublishState({ loading: false, error: '', data: null });
 
     try {
@@ -92,18 +172,21 @@ export default function Page() {
       const geojson = JSON.parse(text);
 
       if (geojson?.type !== 'FeatureCollection' || !Array.isArray(geojson.features)) {
-        throw new Error('File must be a GeoJSON FeatureCollection.');
+        throw new Error('Le fichier doit etre un GeoJSON FeatureCollection.');
       }
 
       setInputGeojson(geojson);
       setInputFilename(file.name);
+      setRules([makeRule('', '')]);
+      setSelectedRegion('');
+      setQuickTarget('');
       const base = safeFilename(file.name);
       setPublishPath(`generated/${base}_super_regions.geojson`);
-      setStatus(`Loaded ${geojson.features.length} features.`);
+      setStatus(`Charge: ${geojson.features.length} features.`);
     } catch (e) {
       setInputGeojson(null);
       setStatus('');
-      setError(e.message || 'Unable to parse file.');
+      setError(e.message || 'Impossible de parser le fichier.');
     }
   }
 
@@ -112,17 +195,47 @@ export default function Page() {
   }
 
   function addRule(prefillSource = '') {
-    setRules((prev) => [...prev, { id: nextRuleId, source: prefillSource, target: '' }]);
-    setNextRuleId((prev) => prev + 1);
+    let added = false;
+
+    setRules((prev) => {
+      if (prefillSource && prev.some((row) => String(row.source).trim() === prefillSource.trim())) {
+        return prev;
+      }
+
+      added = true;
+      return [...prev, makeRule(prefillSource, '')];
+    });
+    if (!added) return;
   }
 
   function removeRule(id) {
     setRules((prev) => (prev.length === 1 ? prev : prev.filter((row) => row.id !== id)));
   }
 
+  function upsertRule(source, target) {
+    const sourceValue = String(source || '').trim();
+    const targetValue = String(target || '').trim();
+
+    if (!sourceValue || !targetValue) return;
+
+    let created = false;
+    setRules((prev) => {
+      const idx = prev.findIndex((row) => String(row.source).trim() === sourceValue);
+      if (idx !== -1) {
+        const copy = [...prev];
+        copy[idx] = { ...copy[idx], target: targetValue };
+        return copy;
+      }
+
+      created = true;
+      return [...prev, makeRule(sourceValue, targetValue)];
+    });
+    if (!created) return;
+  }
+
   function runBuild() {
     if (!inputGeojson) {
-      setError('Import a GeoJSON file first.');
+      setError('Importe un GeoJSON avant de generer.');
       return;
     }
 
@@ -140,16 +253,64 @@ export default function Page() {
       });
 
       setResult(built);
-      setStatus(`Done: ${built.stats.outputFeatures} super-regions generated.`);
+      setStatus(`OK: ${built.stats.outputFeatures} super-regions generees.`);
     } catch (e) {
       setResult(null);
-      setError(e.message || 'Build failed.');
+      setError(e.message || 'Generation en erreur.');
+    }
+  }
+
+  async function suggestWithOpenAI() {
+    if (!inputGeojson) {
+      setError('Importe un GeoJSON avant de lancer OpenAI.');
+      return;
+    }
+
+    setAiState({ loading: true, error: '', notes: '' });
+    setError('');
+
+    try {
+      const response = await fetch('/api/openai/suggest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          regions,
+          style: aiStyle,
+          superRegionCount: aiGroupCount
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || 'OpenAI suggestion failed.');
+      }
+
+      const generated = Array.isArray(data.rules) ? data.rules : [];
+      if (generated.length === 0) {
+        throw new Error('OpenAI n\'a renvoye aucune regle exploitable.');
+      }
+
+      const next = generated.map((row, index) => ({
+        id: makeRule().id,
+        source: String(row.source || ''),
+        target: String(row.target || '')
+      }));
+
+      setRules(next);
+      setAiState({
+        loading: false,
+        error: '',
+        notes: String(data.notes || '').trim()
+      });
+      setStatus(`OpenAI: ${next.length} regles suggerees.`);
+    } catch (e) {
+      setAiState({ loading: false, error: e.message || 'OpenAI suggestion failed.', notes: '' });
     }
   }
 
   async function publishToGithub() {
     if (!result?.outputGeojson) {
-      setError('Generate a result before publishing.');
+      setError('Genere un resultat avant publication GitHub.');
       return;
     }
 
@@ -177,52 +338,104 @@ export default function Page() {
     }
   }
 
+  const sourceMapGetLabel = (geo) => String(geo?.properties?.[sourceField] || '');
+  const sourceMapGetFill = (geo) => {
+    const label = String(geo?.properties?.[sourceField] || '').trim();
+    const key = normalize ? normalizeLabel(label) : label;
+    const group = assignmentLookup.get(key);
+    return group ? colorForGroup(group) : '#e6ddd1';
+  };
+
+  const outputMapGetLabel = (geo) => String(geo?.properties?.[targetField] || '');
+  const outputMapGetFill = (geo) => {
+    const group = String(geo?.properties?.[targetField] || '').trim();
+    return colorForGroup(group);
+  };
+
   return (
     <main className="page">
       <div className="hero">
         <p className="eyebrow">CARTES</p>
         <h1>Super-region builder</h1>
         <p>
-          Upload a GeoJSON, assign only the regions you want, generate the merged GeoJSON,
-          then publish it to GitHub and copy the raw URL.
+          Upload GeoJSON, fais quelques assignations, previsualise la carte puis publie vers GitHub pour recuperer le lien raw.
         </p>
       </div>
 
       <section className="card">
-        <h2>1. Import</h2>
+        <h2>1. Import du GeoJSON</h2>
         <label className="file-input">
-          <span>GeoJSON file</span>
+          <span>Fichier .json/.geojson</span>
           <input
             type="file"
             accept=".json,.geojson,application/json"
             onChange={(e) => onUploadFile(e.target.files?.[0])}
           />
         </label>
+
         <div className="stats-grid">
           <div>
-            <small>File</small>
+            <small>Fichier</small>
             <strong>{inputFilename || '-'}</strong>
           </div>
           <div>
-            <small>Regions found</small>
+            <small>Regions detectees</small>
             <strong>{regions.length}</strong>
           </div>
           <div>
-            <small>Assignments</small>
+            <small>Regles actives</small>
             <strong>{assignedCount}</strong>
           </div>
         </div>
       </section>
 
       <section className="card">
-        <h2>2. Assign only what you need</h2>
+        <h2>2. Auto-suggestion OpenAI</h2>
         <p className="hint">
-          Add only a few source regions. Unassigned regions are kept as-is by default.
+          OpenAI peut proposer automatiquement les super-regions. Tu peux ensuite corriger manuellement.
         </p>
 
         <div className="inline-grid">
           <label>
-            <span>Source field</span>
+            <span>Style</span>
+            <select value={aiStyle} onChange={(e) => setAiStyle(e.target.value)}>
+              <option value="geographic">Geographique classique</option>
+              <option value="tourism">Tourisme</option>
+              <option value="business">Business / UX</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Nombre cible de super-regions</span>
+            <input
+              type="number"
+              min="2"
+              max="12"
+              value={aiGroupCount}
+              onChange={(e) => setAiGroupCount(Number(e.target.value || 4))}
+            />
+          </label>
+        </div>
+
+        <div className="actions">
+          <button type="button" onClick={suggestWithOpenAI} disabled={aiState.loading || !inputGeojson}>
+            {aiState.loading ? 'Suggestion en cours...' : 'Generer les regles avec OpenAI'}
+          </button>
+        </div>
+
+        {aiState.notes ? <p className="hint">Note IA: {aiState.notes}</p> : null}
+        {aiState.error ? <p className="error">{aiState.error}</p> : null}
+      </section>
+
+      <section className="card">
+        <h2>3. Regles manuelles (simple)</h2>
+        <p className="hint">
+          Garde seulement les lignes utiles. Les regions non listees restent inchangees par defaut.
+        </p>
+
+        <div className="inline-grid">
+          <label>
+            <span>Champ source</span>
             <select value={sourceField} onChange={(e) => setSourceField(e.target.value)}>
               {fields.map((field) => (
                 <option key={field} value={field}>
@@ -231,8 +444,9 @@ export default function Page() {
               ))}
             </select>
           </label>
+
           <label>
-            <span>Target field</span>
+            <span>Champ cible</span>
             <input
               type="text"
               value={targetField}
@@ -240,21 +454,23 @@ export default function Page() {
               placeholder="macro_region"
             />
           </label>
+
           <label>
-            <span>On missing</span>
+            <span>Si region absente des regles</span>
             <select value={onMissing} onChange={(e) => setOnMissing(e.target.value)}>
               <option value="keep-source">keep-source</option>
               <option value="error">error</option>
               <option value="drop">drop</option>
             </select>
           </label>
+
           <label className="checkbox">
             <input
               type="checkbox"
               checked={normalize}
               onChange={(e) => setNormalize(e.target.checked)}
             />
-            <span>Normalize labels (accents/spaces)</span>
+            <span>Normaliser les labels</span>
           </label>
         </div>
 
@@ -271,15 +487,15 @@ export default function Page() {
                 list="region-options"
                 value={row.source}
                 onChange={(e) => updateRule(row.id, 'source', e.target.value)}
-                placeholder="Source region (e.g. ChiangMai)"
+                placeholder="Region source"
               />
               <input
                 value={row.target}
                 onChange={(e) => updateRule(row.id, 'target', e.target.value)}
-                placeholder="Super region (e.g. North)"
+                placeholder="Super-region"
               />
               <button type="button" className="ghost" onClick={() => removeRule(row.id)}>
-                Remove
+                Supprimer
               </button>
             </div>
           ))}
@@ -287,30 +503,101 @@ export default function Page() {
 
         <div className="actions">
           <button type="button" className="ghost" onClick={() => addRule()}>
-            + Add line
+            + Ajouter ligne
           </button>
           <button type="button" onClick={runBuild}>
-            Generate super-regions
+            Generer super-regions
           </button>
         </div>
       </section>
 
       <section className="card">
-        <h2>3. Export</h2>
+        <h2>4. Preview carte interactive</h2>
+        <p className="hint">Clique une region dans la carte source pour la pre-remplir dans les regles.</p>
 
+        <div className="map-grid">
+          <GeoPreviewMap
+            title="Carte source"
+            subtitle="Couleur = super-region assignee"
+            geojson={inputGeojson}
+            getLabel={sourceMapGetLabel}
+            getFill={sourceMapGetFill}
+            onRegionClick={(label) => {
+              setSelectedRegion(label);
+              addRule(label);
+            }}
+            selectedLabel={selectedRegion}
+          />
+
+          <GeoPreviewMap
+            title="Resultat genere"
+            subtitle="Preview avant publication"
+            geojson={result?.outputGeojson || null}
+            getLabel={outputMapGetLabel}
+            getFill={outputMapGetFill}
+          />
+        </div>
+
+        <div className="inline-grid quick-grid">
+          <label>
+            <span>Region selectionnee (depuis carte)</span>
+            <input
+              value={selectedRegion}
+              onChange={(e) => setSelectedRegion(e.target.value)}
+              placeholder="Clique une region dans la carte"
+            />
+          </label>
+          <label>
+            <span>Assigner a</span>
+            <input
+              value={quickTarget}
+              onChange={(e) => setQuickTarget(e.target.value)}
+              placeholder="Ex: North"
+            />
+          </label>
+        </div>
+
+        <div className="actions">
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => {
+              upsertRule(selectedRegion, quickTarget);
+              setQuickTarget('');
+            }}
+            disabled={!selectedRegion || !quickTarget}
+          >
+            Assigner la region selectionnee
+          </button>
+        </div>
+
+        {groupedLegend.length > 0 ? (
+          <div className="legend">
+            {groupedLegend.map((name) => (
+              <span key={name} className="legend-item">
+                <i style={{ background: colorForGroup(name) }} />
+                {name}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="card">
+        <h2>5. Export</h2>
         {result ? (
           <>
             <div className="stats-grid">
               <div>
-                <small>Input features</small>
+                <small>Features entree</small>
                 <strong>{result.stats.inputFeatures}</strong>
               </div>
               <div>
-                <small>Output features</small>
+                <small>Features sortie</small>
                 <strong>{result.stats.outputFeatures}</strong>
               </div>
               <div>
-                <small>Unmapped source regions</small>
+                <small>Regions non mappees</small>
                 <strong>{result.stats.missingCount}</strong>
               </div>
             </div>
@@ -326,24 +613,22 @@ export default function Page() {
                   )
                 }
               >
-                Download output GeoJSON
+                Telecharger le GeoJSON genere
               </button>
             </div>
           </>
         ) : (
-          <p className="hint">Generate first to get an export file.</p>
+          <p className="hint">Genere d'abord un resultat.</p>
         )}
       </section>
 
       <section className="card">
-        <h2>4. Publish to GitHub</h2>
-        <p className="hint">
-          This uses a secure server API route with your Vercel environment variables.
-        </p>
+        <h2>6. Publish GitHub + URL raw</h2>
+        <p className="hint">Le token GitHub reste cote serveur (route API), jamais expose dans le front.</p>
 
         <div className="inline-grid">
           <label>
-            <span>Repository path</span>
+            <span>Chemin dans le repo</span>
             <input
               type="text"
               value={publishPath}
@@ -351,8 +636,9 @@ export default function Page() {
               placeholder="generated/thailand_super_regions.geojson"
             />
           </label>
+
           <label>
-            <span>Commit message</span>
+            <span>Message de commit</span>
             <input
               type="text"
               value={commitMessage}
@@ -363,7 +649,7 @@ export default function Page() {
 
         <div className="actions">
           <button type="button" onClick={publishToGithub} disabled={publishState.loading || !result}>
-            {publishState.loading ? 'Publishing...' : 'Publish and get raw URL'}
+            {publishState.loading ? 'Publication en cours...' : 'Publier et recuperer URL raw'}
           </button>
         </div>
 

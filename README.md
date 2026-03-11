@@ -1,66 +1,68 @@
 # CARTES
 
-GeoJSON tools + visual web app to build super-regions and publish output to GitHub.
+Outil visuel pour:
 
-## Main goal
+1. importer un GeoJSON,
+2. générer automatiquement des super-régions (OpenAI) ou les éditer manuellement,
+3. prévisualiser la carte interactive avant envoi,
+4. publier le GeoJSON final sur GitHub,
+5. récupérer l'URL raw pour ton site.
 
-1. import a GeoJSON from the browser,
-2. add only a few assignment lines (`source region` -> `super region`),
-3. generate merged GeoJSON,
-4. publish file to GitHub,
-5. copy raw URL and use it in your travel website.
-
-The source GeoJSON is never modified.
-
-## Visual app (Vercel-ready)
-
-### Run locally
+## Lancer en local
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Puis ouvre `http://localhost:3000`.
 
-### Deploy on Vercel
+## Variables d'environnement
 
-1. Push this repo to GitHub.
-2. Import project in Vercel.
-3. Add environment variables from `.env.example`:
+Copie `.env.example` vers `.env.local` et complète:
 
-- `GITHUB_TOKEN`
-- `GITHUB_OWNER`
-- `GITHUB_REPO`
-- `GITHUB_BRANCH` (optional, default `main`)
+- `OPENAI_API_KEY`: clé API OpenAI
+- `OPENAI_MODEL` (optionnel): défaut `gpt-4.1-mini`
+- `GITHUB_TOKEN`: token GitHub avec `Contents: Read and write`
+- `GITHUB_OWNER`: ex `JulienArbellini`
+- `GITHUB_REPO`: ex `CARTES`
+- `GITHUB_BRANCH` (optionnel): défaut `main`
 
+## Déploiement Vercel
+
+1. Push le repo sur GitHub.
+2. Import le projet dans Vercel.
+3. Ajoute les variables d'environnement ci-dessus dans Vercel.
 4. Deploy.
 
-The app has a server route at `app/api/github/publish/route.js` that commits generated GeoJSON into your repo and returns a raw URL.
+## Workflow UI
 
-## How the UI works
+1. Importe ton `.geojson`.
+2. Clique `Generer les regles avec OpenAI` (ou saisis tes lignes à la main).
+3. Ajuste les règles si besoin.
+4. Vérifie la `Preview carte interactive` (source + résultat).
+5. Clique `Generer super-regions`.
+6. Clique `Publier et recuperer URL raw`.
 
-1. Upload a `.geojson`/`.json` file.
-2. Pick source field (`NAME_1` by default).
-3. Add only needed lines in the visual table:
-- source region: `ChiangMai`
-- super region: `North`
-4. Click `Generate super-regions`.
-5. Click `Publish and get raw URL`.
+## Endpoints API
 
-Default behavior for unmapped regions is `keep-source`.
+- `POST /api/openai/suggest`
+  - entrée: `{ regions, style, superRegionCount }`
+  - sortie: `{ rules: [{source,target}], groupNames, notes }`
 
-## NPM scripts
+- `POST /api/github/publish`
+  - entrée: `{ path, message, geojson }`
+  - sortie: `{ rawUrl, path, branch, commitSha }`
 
-- `npm run dev`: run Next.js app
-- `npm run build`: production build
-- `npm run start`: run production app
-- `npm run superregions:init-mapping`: CLI template generator
-- `npm run superregions:build`: CLI super-region builder
+## Scripts npm
 
-## CLI mode (optional)
+- `npm run dev`: app Next.js
+- `npm run build`: build production
+- `npm run start`: run production
+- `npm run superregions:init-mapping`: CLI template CSV
+- `npm run superregions:build`: CLI merge GeoJSON
 
-If you want batch/offline processing without UI:
+## CLI (optionnel)
 
 ```bash
 npm run superregions:build -- \
@@ -69,14 +71,3 @@ npm run superregions:build -- \
   --output output/thailand_macro_regions.geojson \
   --normalize
 ```
-
-Supported mapping formats:
-
-- JSON object: `{"ChiangMai":"North"}`
-- JSON compact: `{"North":["ChiangMai","ChiangRai"]}`
-- JSON list: `[{"source":"ChiangMai","target":"North"}]`
-- CSV: `source,target`
-
-## Existing sample mapping
-
-- `mappings/thailand_macro_regions.json`
