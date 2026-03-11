@@ -89,8 +89,14 @@ export default function Page() {
   const [quickTarget, setQuickTarget] = useState('');
 
   const [aiStyle, setAiStyle] = useState('geographic');
-  const [aiGroupCount, setAiGroupCount] = useState(4);
-  const [aiState, setAiState] = useState({ loading: false, error: '', notes: '' });
+  const [aiGroupCount, setAiGroupCount] = useState('');
+  const [aiState, setAiState] = useState({
+    loading: false,
+    error: '',
+    notes: '',
+    groupNames: [],
+    chosenCount: null
+  });
 
   const regions = useMemo(() => {
     if (!inputGeojson) return [];
@@ -105,6 +111,30 @@ export default function Page() {
     () => rules.filter((row) => String(row.source).trim() && String(row.target).trim()).length,
     [rules]
   );
+
+  const countryHint = useMemo(() => {
+    if (!inputGeojson?.features || !Array.isArray(inputGeojson.features)) {
+      return '';
+    }
+
+    const counts = new Map();
+    for (const feature of inputGeojson.features) {
+      const value = String(feature?.properties?.COUNTRY || '').trim();
+      if (!value) continue;
+      counts.set(value, (counts.get(value) || 0) + 1);
+    }
+
+    let best = '';
+    let bestCount = 0;
+    for (const [name, count] of counts.entries()) {
+      if (count > bestCount) {
+        best = name;
+        bestCount = count;
+      }
+    }
+
+    return best;
+  }, [inputGeojson]);
 
   const assignmentLookup = useMemo(() => {
     const map = new Map();
@@ -164,7 +194,7 @@ export default function Page() {
     setError('');
     setStatus('Lecture du fichier...');
     setResult(null);
-    setAiState({ loading: false, error: '', notes: '' });
+    setAiState({ loading: false, error: '', notes: '', groupNames: [], chosenCount: null });
     setPublishState({ loading: false, error: '', data: null });
 
     try {
@@ -266,17 +296,23 @@ export default function Page() {
       return;
     }
 
-    setAiState({ loading: true, error: '', notes: '' });
+    setAiState((prev) => ({
+      ...prev,
+      loading: true,
+      error: ''
+    }));
     setError('');
 
     try {
+      const normalizedCount = String(aiGroupCount).trim();
       const response = await fetch('/api/openai/suggest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           regions,
           style: aiStyle,
-          superRegionCount: aiGroupCount
+          superRegionCount: normalizedCount === '' ? null : Number(normalizedCount),
+          countryHint
         })
       });
 
@@ -300,11 +336,19 @@ export default function Page() {
       setAiState({
         loading: false,
         error: '',
-        notes: String(data.notes || '').trim()
+        notes: String(data.notes || '').trim(),
+        groupNames: Array.isArray(data.groupNames) ? data.groupNames : [],
+        chosenCount: Number(data.chosenCount) || null
       });
       setStatus(`OpenAI: ${next.length} regles suggerees.`);
     } catch (e) {
-      setAiState({ loading: false, error: e.message || 'OpenAI suggestion failed.', notes: '' });
+      setAiState({
+        loading: false,
+        error: e.message || 'OpenAI suggestion failed.',
+        notes: '',
+        groupNames: [],
+        chosenCount: null
+      });
     }
   }
 
@@ -406,13 +450,14 @@ export default function Page() {
           </label>
 
           <label>
-            <span>Nombre cible de super-regions</span>
+            <span>Nombre cible de super-regions (optionnel)</span>
             <input
               type="number"
               min="2"
               max="12"
               value={aiGroupCount}
-              onChange={(e) => setAiGroupCount(Number(e.target.value || 4))}
+              onChange={(e) => setAiGroupCount(e.target.value)}
+              placeholder="Vide = choix automatique"
             />
           </label>
         </div>
@@ -424,6 +469,19 @@ export default function Page() {
         </div>
 
         {aiState.notes ? <p className="hint">Note IA: {aiState.notes}</p> : null}
+        {aiState.chosenCount ? (
+          <p className="hint">Nombre de super-regions retenu: {aiState.chosenCount}</p>
+        ) : null}
+        {aiState.groupNames?.length > 0 ? (
+          <div className="legend">
+            {aiState.groupNames.map((name) => (
+              <span key={name} className="legend-item">
+                <i style={{ background: colorForGroup(name) }} />
+                {name}
+              </span>
+            ))}
+          </div>
+        ) : null}
         {aiState.error ? <p className="error">{aiState.error}</p> : null}
       </section>
 

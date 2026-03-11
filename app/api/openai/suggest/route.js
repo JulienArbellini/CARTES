@@ -3,13 +3,26 @@ import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 
-function cleanRules(rules) {
+function normalizeKey(value) {
+  return String(value ?? '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function cleanRules(rules, allowedSources) {
   if (!Array.isArray(rules)) {
     return [];
   }
 
+  const allowed = new Map();
+  for (const source of allowedSources) {
+    allowed.set(normalizeKey(source), source);
+  }
+
   const out = [];
-  const seen = new Set();
+  const seenSource = new Set();
 
   for (const row of rules) {
     const source = String(row?.source ?? '').trim();
@@ -18,13 +31,18 @@ function cleanRules(rules) {
       continue;
     }
 
-    const key = `${source}__${target}`;
-    if (seen.has(key)) {
+    const sourceKey = normalizeKey(source);
+    const canonicalSource = allowed.get(sourceKey);
+    if (!canonicalSource) {
       continue;
     }
 
-    seen.add(key);
-    out.push({ source, target });
+    if (seenSource.has(sourceKey)) {
+      continue;
+    }
+
+    seenSource.add(sourceKey);
+    out.push({ source: canonicalSource, target });
   }
 
   return out;
@@ -88,7 +106,19 @@ export async function POST(request) {
       : [];
 
     const style = String(body?.style || 'geographic');
-    const superRegionCount = Number(body?.superRegionCount || 4);
+    const countryHint = String(body?.countryHint || '').trim();
+
+    const rawCount = body?.superRegionCount;
+    const hasRequestedCount =
+      rawCount !== undefined && rawCount !== null && String(rawCount).trim() !== '';
+    const superRegionCount = hasRequestedCount ? Number(rawCount) : null;
+
+    if (hasRequestedCount && (!Number.isFinite(superRegionCount) || superRegionCount < 2 || superRegionCount > 20)) {
+      return NextResponse.json(
+        { error: 'superRegionCount must be between 2 and 20 when provided.' },
+        { status: 400 }
+      );
+    }
 
     if (regions.length < 2) {
       return NextResponse.json({ error: 'Need at least 2 regions to suggest grouping.' }, { status: 400 });
@@ -107,29 +137,39 @@ export async function POST(request) {
     const client = new OpenAI({ apiKey });
 
     const systemPrompt = [
-      'You are a geospatial assistant.',
-      'Goal: group administrative regions into super-regions.',
+      'You are a geospatial analyst specialized in regional clustering.',
+      'Goal: group administrative regions into coherent super-regions.',
       'Return STRICT JSON only, no markdown.',
       'Output format:',
       '{',
       '  "rules": [{"source":"RegionName","target":"SuperRegionName"}],',
       '  "group_names": ["SuperRegionName1", "SuperRegionName2"],',
-      '  "notes": "short rationale"',
+      '  "chosen_count": 4,',
+      '  "notes": "short rationale in one sentence"',
       '}',
-      'Rules:',
-      '- Include only source regions that appear in the input list.',
-      '- Use each source at most once.',
-      '- Choose human-readable target names.',
-      '- Prefer meaningful travel/business-friendly names if style requests it.',
-      '- Return a complete assignment for all source regions when possible.'
+      'Hard constraints:',
+      '- Use ONLY source names from the provided list.',
+      '- Assign each source exactly once.',
+      '- Do not invent sources.',
+      '- Keep group names stable and human-readable.',
+      '- Avoid random or arbitrary clusters.',
+      '- Prefer geographically coherent grouping.',
+      '- Avoid singleton groups unless unavoidable.',
+      '- If a desired count is provided, match it exactly.',
+      '- If desired count is not provided, choose a natural count between 3 and 8.'
     ].join('\n');
 
     const userPrompt = [
       `Style: ${style}`,
-      `Desired super-region count: ${superRegionCount}`,
+      countryHint ? `Country hint: ${countryHint}` : null,
+      hasRequestedCount
+        ? `Desired super-region count (mandatory): ${superRegionCount}`
+        : 'Desired super-region count: not specified (choose natural count 3..8)',
       'Source regions (exact labels):',
       JSON.stringify(regions)
-    ].join('\n\n');
+    ]
+      .filter(Boolean)
+      .join('\n\n');
 
     const response = await client.responses.create({
       model,
@@ -137,13 +177,13 @@ export async function POST(request) {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      temperature: 0.2
+      temperature: 0
     });
 
     const text = responseToText(response);
     const parsed = extractJsonObject(text);
 
-    const rules = cleanRules(parsed?.rules);
+    const rules = cleanRules(parsed?.rules, regions);
 
     if (rules.length === 0) {
       return NextResponse.json(
@@ -152,12 +192,30 @@ export async function POST(request) {
       );
     }
 
+    const covered = new Set(rules.map((r) => normalizeKey(r.source)));
+    const missingSources = regions.filter((name) => !covered.has(normalizeKey(name)));
+
+    if (missingSources.length > 0) {
+      // Keep the API resilient: fallback to source name as group for uncovered rows.
+      for (const source of missingSources) {
+        rules.push({ source, target: source });
+      }
+    }
+
+    const returnedGroupNames = Array.isArray(parsed?.group_names)
+      ? parsed.group_names.map((x) => String(x)).filter(Boolean)
+      : [];
+
+    const actualGroupNames = Array.from(new Set(rules.map((r) => r.target))).sort((a, b) =>
+      a.localeCompare(b)
+    );
+
     return NextResponse.json({
       rules,
-      groupNames: Array.isArray(parsed?.group_names)
-        ? parsed.group_names.map((x) => String(x)).filter(Boolean)
-        : [],
-      notes: String(parsed?.notes || '').trim()
+      groupNames: returnedGroupNames.length > 0 ? returnedGroupNames : actualGroupNames,
+      chosenCount: Number(parsed?.chosen_count) || actualGroupNames.length,
+      notes: String(parsed?.notes || '').trim(),
+      missingFilledWithSource: missingSources.length
     });
   } catch (error) {
     return NextResponse.json(

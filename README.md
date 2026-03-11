@@ -38,17 +38,18 @@ Copie `.env.example` vers `.env.local` et complète:
 ## Workflow UI
 
 1. Importe ton `.geojson`.
-2. Clique `Generer les regles avec OpenAI` (ou saisis tes lignes à la main).
-3. Ajuste les règles si besoin.
-4. Vérifie la `Preview carte interactive` (source + résultat).
-5. Clique `Generer super-regions`.
-6. Clique `Publier et recuperer URL raw`.
+2. (Optionnel) Renseigne un nombre cible de super-régions. Laisse vide pour laisser l'IA choisir un nombre naturel.
+3. Clique `Generer les regles avec OpenAI` (ou saisis tes lignes à la main).
+4. Ajuste les règles si besoin.
+5. Vérifie la `Preview carte interactive` (source + résultat).
+6. Clique `Generer super-regions`.
+7. Clique `Publier et recuperer URL raw`.
 
 ## Endpoints API
 
 - `POST /api/openai/suggest`
-  - entrée: `{ regions, style, superRegionCount }`
-  - sortie: `{ rules: [{source,target}], groupNames, notes }`
+  - entrée: `{ regions, style, superRegionCount?, countryHint? }`
+  - sortie: `{ rules: [{source,target}], groupNames, chosenCount, notes }`
 
 - `POST /api/github/publish`
   - entrée: `{ path, message, geojson }`
