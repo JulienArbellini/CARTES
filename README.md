@@ -26,7 +26,8 @@ Copie `.env.example` vers `.env.local` et complète:
 - `GITHUB_TOKEN`: token GitHub avec `Contents: Read and write`
 - `GITHUB_OWNER`: ex `JulienArbellini`
 - `GITHUB_REPO`: ex `CARTES`
-- `GITHUB_BRANCH` (optionnel): défaut `main`
+- `GITHUB_PUBLISH_BRANCH` (optionnel): défaut `generated-geojson`
+- `GITHUB_BASE_BRANCH` (optionnel): défaut `main` (sert à créer la branche de publish si absente)
 
 ## Déploiement Vercel
 
@@ -39,21 +40,25 @@ Copie `.env.example` vers `.env.local` et complète:
 
 1. Importe ton `.geojson`.
 2. (Optionnel) Renseigne un nombre cible de super-régions. Laisse vide pour laisser l'IA choisir un nombre naturel.
-3. Clique `Generer les regles avec OpenAI` (ou saisis tes lignes à la main).
+   Si tu renseignes une valeur (ex: 4), l'API essaie de rester exactement à ce nombre.
+3. Clique `Generer les regles avec OpenAI` (tourisme culturel/activités + contiguïté spatiale).
 4. Ajuste les règles si besoin.
-5. Vérifie la `Preview carte interactive` (source + résultat).
-6. Clique `Generer super-regions`.
-7. Clique `Publier et recuperer URL raw`.
+5. Choisis le mode de sortie:
+   - `assign-only` (recommandé): pas de fusion géométrique, juste une colonne de super-région.
+   - `dissolve`: fusion géométrique réelle.
+6. Vérifie la `Preview carte interactive` (source + résultat).
+7. Clique `Generer super-regions`.
+8. Clique `Publier et recuperer URL raw`.
 
 ## Endpoints API
 
 - `POST /api/openai/suggest`
-  - entrée: `{ regions, style, superRegionCount?, countryHint? }`
-  - sortie: `{ rules: [{source,target}], groupNames, chosenCount, notes }`
+  - entrée: `{ regions, adjacencyGraph, style, superRegionCount?, countryHint? }`
+  - sortie: `{ rules: [{source,target}], groupNames, chosenCount, notes, contiguity }`
 
 - `POST /api/github/publish`
-  - entrée: `{ path, message, geojson }`
-  - sortie: `{ rawUrl, path, branch, commitSha }`
+  - entrée: `{ path, branch?, baseBranch?, message, geojson }`
+  - sortie: `{ rawUrl, path, branch, baseBranch, commitSha }`
 
 ## Scripts npm
 
@@ -70,5 +75,6 @@ npm run superregions:build -- \
   --input path/to/gadm41_THA_1.json \
   --mapping mappings/thailand_macro_regions.json \
   --output output/thailand_macro_regions.geojson \
+  --merge-mode assign-only \
   --normalize
 ```

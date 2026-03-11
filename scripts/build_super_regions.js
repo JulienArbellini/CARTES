@@ -47,6 +47,7 @@ Options:
   --mapping-target-column <name>   Target column for CSV/JSON-list mapping (default: target)
   --normalize                      Normalize labels before matching
   --on-missing <mode>              error | drop | keep-source (default: keep-source)
+  --merge-mode <mode>              assign-only | dissolve (default: assign-only)
   --help                           Show this help message`);
 }
 
@@ -285,9 +286,14 @@ function main() {
   const mappingTargetColumn = args['mapping-target-column'] || 'target';
   const useNormalization = Boolean(args.normalize);
   const onMissing = args['on-missing'] || 'keep-source';
+  const mergeMode = args['merge-mode'] || 'assign-only';
 
   if (!['error', 'drop', 'keep-source'].includes(onMissing)) {
     throw new Error("--on-missing must be one of: error, drop, keep-source");
+  }
+
+  if (!['assign-only', 'dissolve'].includes(mergeMode)) {
+    throw new Error("--merge-mode must be one of: assign-only, dissolve");
   }
 
   if (!fs.existsSync(inputPath)) {
@@ -353,28 +359,45 @@ function main() {
     throw new Error('No features left to export after filtering missing mappings.');
   }
 
-  const grouped = new Map();
-  for (const feature of selectedFeatures) {
-    const group = feature.properties[targetField];
-    if (!grouped.has(group)) {
-      grouped.set(group, []);
-    }
-    grouped.get(group).push(feature);
-  }
+  let outputFeatures = [];
 
-  const outputFeatures = [];
-  const sortedGroups = Array.from(grouped.keys()).sort((a, b) => String(a).localeCompare(String(b)));
+  if (mergeMode === 'assign-only') {
+    outputFeatures = [...selectedFeatures].sort((a, b) => {
+      const aTarget = String(a?.properties?.[targetField] || '');
+      const bTarget = String(b?.properties?.[targetField] || '');
+      if (aTarget !== bTarget) {
+        return aTarget.localeCompare(bTarget);
+      }
 
-  for (const group of sortedGroups) {
-    const groupFeatures = grouped.get(group);
-    const geometry = dissolveGroup(groupFeatures);
-    outputFeatures.push({
-      type: 'Feature',
-      properties: {
-        [targetField]: group
-      },
-      geometry
+      const aSource = String(a?.properties?.[sourceField] || '');
+      const bSource = String(b?.properties?.[sourceField] || '');
+      return aSource.localeCompare(bSource);
     });
+  } else {
+    const grouped = new Map();
+    for (const feature of selectedFeatures) {
+      const group = feature.properties[targetField];
+      if (!grouped.has(group)) {
+        grouped.set(group, []);
+      }
+      grouped.get(group).push(feature);
+    }
+
+    const sortedGroups = Array.from(grouped.keys()).sort((a, b) =>
+      String(a).localeCompare(String(b))
+    );
+
+    for (const group of sortedGroups) {
+      const groupFeatures = grouped.get(group);
+      const geometry = dissolveGroup(groupFeatures);
+      outputFeatures.push({
+        type: 'Feature',
+        properties: {
+          [targetField]: group
+        },
+        geometry
+      });
+    }
   }
 
   const result = {

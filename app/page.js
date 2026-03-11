@@ -3,38 +3,57 @@
 import { useEffect, useMemo, useState } from 'react';
 import GeoPreviewMap from './components/GeoPreviewMap';
 import {
+  buildAdjacencyGraph,
   buildSuperRegions,
   extractPropertyFields,
   extractRegionValues,
   normalizeLabel
 } from '../lib/super-regions';
 
-const PALETTE = [
-  '#eab308',
-  '#22c55e',
-  '#06b6d4',
-  '#3b82f6',
-  '#a855f7',
-  '#f97316',
-  '#ef4444',
-  '#10b981',
-  '#14b8a6',
-  '#8b5cf6'
+const DISTINCT_COLORS = [
+  '#e6194b',
+  '#3cb44b',
+  '#ffe119',
+  '#0082c8',
+  '#f58231',
+  '#911eb4',
+  '#46f0f0',
+  '#f032e6',
+  '#d2f53c',
+  '#fabebe',
+  '#008080',
+  '#e6beff',
+  '#aa6e28',
+  '#fffac8',
+  '#800000',
+  '#aaffc3',
+  '#808000',
+  '#ffd8b1',
+  '#000080',
+  '#808080',
+  '#1f77b4',
+  '#ff7f0e',
+  '#2ca02c',
+  '#d62728'
 ];
 
-function hashCode(value) {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash << 5) - hash + value.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash);
+function generatedDistinctColor(index) {
+  const hue = (index * 137.508) % 360;
+  return `hsl(${Math.round(hue)} 72% 50%)`;
 }
 
-function colorForGroup(groupName) {
-  const label = String(groupName || '').trim();
-  if (!label) return '#ded6ca';
-  return PALETTE[hashCode(label) % PALETTE.length];
+function buildGroupColorMap(names) {
+  const unique = Array.from(new Set((names || []).map((x) => String(x).trim()).filter(Boolean))).sort((a, b) =>
+    a.localeCompare(b)
+  );
+
+  const map = new Map();
+  unique.forEach((name, index) => {
+    const color = index < DISTINCT_COLORS.length ? DISTINCT_COLORS[index] : generatedDistinctColor(index);
+    map.set(name, color);
+  });
+
+  return map;
 }
 
 function safeFilename(name) {
@@ -74,6 +93,7 @@ export default function Page() {
   const [targetField, setTargetField] = useState('macro_region');
   const [normalize, setNormalize] = useState(true);
   const [onMissing, setOnMissing] = useState('keep-source');
+  const [mergeMode, setMergeMode] = useState('assign-only');
 
   const [rules, setRules] = useState([makeRule('', '')]);
 
@@ -82,13 +102,14 @@ export default function Page() {
 
   const [result, setResult] = useState(null);
   const [publishPath, setPublishPath] = useState('generated/super_regions.geojson');
+  const [publishBranch, setPublishBranch] = useState('generated-geojson');
   const [commitMessage, setCommitMessage] = useState('chore: add generated super-regions geojson');
   const [publishState, setPublishState] = useState({ loading: false, error: '', data: null });
 
   const [selectedRegion, setSelectedRegion] = useState('');
   const [quickTarget, setQuickTarget] = useState('');
 
-  const [aiStyle, setAiStyle] = useState('geographic');
+  const [aiStyle, setAiStyle] = useState('tourism-cultural');
   const [aiGroupCount, setAiGroupCount] = useState('');
   const [aiState, setAiState] = useState({
     loading: false,
@@ -111,6 +132,15 @@ export default function Page() {
     () => rules.filter((row) => String(row.source).trim() && String(row.target).trim()).length,
     [rules]
   );
+
+  const adjacencyGraph = useMemo(() => {
+    if (!inputGeojson) return null;
+    try {
+      return buildAdjacencyGraph(inputGeojson, sourceField);
+    } catch (_) {
+      return null;
+    }
+  }, [inputGeojson, sourceField]);
 
   const countryHint = useMemo(() => {
     if (!inputGeojson?.features || !Array.isArray(inputGeojson.features)) {
@@ -168,6 +198,14 @@ export default function Page() {
 
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [rules, result, targetField]);
+
+  const groupColorMap = useMemo(() => buildGroupColorMap(groupedLegend), [groupedLegend]);
+
+  const colorForGroup = (groupName) => {
+    const label = String(groupName || '').trim();
+    if (!label) return '#ded6ca';
+    return groupColorMap.get(label) || '#ded6ca';
+  };
 
   useEffect(() => {
     if (!inputGeojson) return;
@@ -263,10 +301,10 @@ export default function Page() {
     if (!created) return;
   }
 
-  function runBuild() {
+  function buildFromAssignments(assignments) {
     if (!inputGeojson) {
       setError('Importe un GeoJSON avant de generer.');
-      return;
+      return null;
     }
 
     setError('');
@@ -275,19 +313,26 @@ export default function Page() {
     try {
       const built = buildSuperRegions({
         geojson: inputGeojson,
-        assignments: rules,
+        assignments,
         sourceField,
         targetField,
         normalize,
-        onMissing
+        onMissing,
+        mergeMode
       });
 
       setResult(built);
       setStatus(`OK: ${built.stats.outputFeatures} super-regions generees.`);
+      return built;
     } catch (e) {
       setResult(null);
       setError(e.message || 'Generation en erreur.');
+      return null;
     }
+  }
+
+  function runBuild() {
+    buildFromAssignments(rules);
   }
 
   async function suggestWithOpenAI() {
@@ -312,7 +357,8 @@ export default function Page() {
           regions,
           style: aiStyle,
           superRegionCount: normalizedCount === '' ? null : Number(normalizedCount),
-          countryHint
+          countryHint,
+          adjacencyGraph
         })
       });
 
@@ -333,6 +379,7 @@ export default function Page() {
       }));
 
       setRules(next);
+      buildFromAssignments(next);
       setAiState({
         loading: false,
         error: '',
@@ -366,6 +413,7 @@ export default function Page() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           path: publishPath,
+          branch: publishBranch,
           message: commitMessage,
           geojson: result.outputGeojson
         })
@@ -443,8 +491,9 @@ export default function Page() {
           <label>
             <span>Style</span>
             <select value={aiStyle} onChange={(e) => setAiStyle(e.target.value)}>
+              <option value="tourism-cultural">Tourisme culturel</option>
+              <option value="tourism-activities">Tourisme activités</option>
               <option value="geographic">Geographique classique</option>
-              <option value="tourism">Tourisme</option>
               <option value="business">Business / UX</option>
             </select>
           </label>
@@ -481,6 +530,11 @@ export default function Page() {
               </span>
             ))}
           </div>
+        ) : null}
+        {adjacencyGraph ? (
+          <p className="hint">
+            Graphe de contiguite actif ({Object.keys(adjacencyGraph).length} regions).
+          </p>
         ) : null}
         {aiState.error ? <p className="error">{aiState.error}</p> : null}
       </section>
@@ -519,6 +573,14 @@ export default function Page() {
               <option value="keep-source">keep-source</option>
               <option value="error">error</option>
               <option value="drop">drop</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Mode de sortie</span>
+            <select value={mergeMode} onChange={(e) => setMergeMode(e.target.value)}>
+              <option value="assign-only">assign-only (recommande)</option>
+              <option value="dissolve">dissolve (fusion geometrique)</option>
             </select>
           </label>
 
@@ -692,6 +754,16 @@ export default function Page() {
               value={publishPath}
               onChange={(e) => setPublishPath(e.target.value)}
               placeholder="generated/thailand_super_regions.geojson"
+            />
+          </label>
+
+          <label>
+            <span>Branche de publication</span>
+            <input
+              type="text"
+              value={publishBranch}
+              onChange={(e) => setPublishBranch(e.target.value)}
+              placeholder="generated-geojson"
             />
           </label>
 

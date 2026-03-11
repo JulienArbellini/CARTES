@@ -28,6 +28,25 @@ function sanitizePath(value) {
   return path;
 }
 
+function sanitizeBranch(value, fallback) {
+  const branch = String(value || fallback || '').trim();
+  if (!branch) {
+    throw new Error('Missing target branch.');
+  }
+  if (branch.includes('..') || branch.startsWith('/') || branch.endsWith('/')) {
+    throw new Error('Invalid branch name.');
+  }
+  return branch;
+}
+
+function encodeBranchRef(branch) {
+  return branch
+    .split('/')
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join('/');
+}
+
 async function githubFetch(url, init, token) {
   const response = await fetch(url, {
     ...init,
@@ -44,12 +63,69 @@ async function githubFetch(url, init, token) {
   return response;
 }
 
+async function ensureBranchExists({ token, owner, repo, branch, baseBranch }) {
+  const branchRef = encodeBranchRef(branch);
+  const branchUrl = `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${branchRef}`;
+
+  const currentBranchRes = await githubFetch(branchUrl, { method: 'GET' }, token);
+  if (currentBranchRes.status === 200) {
+    return;
+  }
+
+  if (currentBranchRes.status !== 404) {
+    const payload = await currentBranchRes.json().catch(() => ({}));
+    throw new Error(payload?.message || 'Unable to check target branch.');
+  }
+
+  const baseRef = encodeBranchRef(baseBranch);
+  const baseUrl = `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${baseRef}`;
+  const baseRes = await githubFetch(baseUrl, { method: 'GET' }, token);
+
+  if (baseRes.status !== 200) {
+    const payload = await baseRes.json().catch(() => ({}));
+    throw new Error(payload?.message || `Base branch '${baseBranch}' not found.`);
+  }
+
+  const basePayload = await baseRes.json();
+  const baseSha = basePayload?.object?.sha;
+  if (!baseSha) {
+    throw new Error(`Unable to resolve SHA for base branch '${baseBranch}'.`);
+  }
+
+  const createRefUrl = `https://api.github.com/repos/${owner}/${repo}/git/refs`;
+  const createRes = await githubFetch(
+    createRefUrl,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        ref: `refs/heads/${branch}`,
+        sha: baseSha
+      })
+    },
+    token
+  );
+
+  if (createRes.status === 201) {
+    return;
+  }
+
+  // 422 can happen on race condition if branch was created in-between
+  if (createRes.status === 422) {
+    return;
+  }
+
+  const payload = await createRes.json().catch(() => ({}));
+  throw new Error(payload?.message || `Unable to create branch '${branch}'.`);
+}
+
 export async function POST(request) {
   try {
     const token = process.env.GITHUB_TOKEN;
     const owner = process.env.GITHUB_OWNER;
     const repo = process.env.GITHUB_REPO;
-    const branch = process.env.GITHUB_BRANCH || 'main';
+    const defaultPublishBranch =
+      process.env.GITHUB_PUBLISH_BRANCH || process.env.GITHUB_BRANCH || 'generated-geojson';
+    const defaultBaseBranch = process.env.GITHUB_BASE_BRANCH || 'main';
 
     if (!token || !owner || !repo) {
       return NextResponse.json(
@@ -63,6 +139,8 @@ export async function POST(request) {
 
     const body = await request.json();
     const targetPath = sanitizePath(body?.path);
+    const branch = sanitizeBranch(body?.branch, defaultPublishBranch);
+    const baseBranch = sanitizeBranch(body?.baseBranch, defaultBaseBranch);
     const commitMessage = String(body?.message || 'chore: publish generated geojson');
     const geojson = body?.geojson;
 
@@ -72,6 +150,14 @@ export async function POST(request) {
 
     const content = JSON.stringify(geojson, null, 2) + '\n';
     const contentBase64 = Buffer.from(content, 'utf8').toString('base64');
+
+    await ensureBranchExists({
+      token,
+      owner,
+      repo,
+      branch,
+      baseBranch
+    });
 
     const encodedPath = encodePath(targetPath);
     const endpoint = `https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}`;
@@ -118,6 +204,7 @@ export async function POST(request) {
       rawUrl,
       path: targetPath,
       branch,
+      baseBranch,
       htmlUrl: payload?.content?.html_url,
       commitSha: payload?.commit?.sha
     });
