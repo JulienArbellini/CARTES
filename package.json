@@ -1,0 +1,20 @@
+{
+  "name": "cartes-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GeoJSON tools and visual app for grouping regions into super-regions",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "superregions:init-mapping": "node scripts/init_mapping_template.js",
+    "superregions:build": "node scripts/build_super_regions.js"
+  },
+  "dependencies": {
+    "@turf/turf": "^6.5.0",
+    "csv-parse": "^5.6.0",
+    "next": "^15.3.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  }
+}
