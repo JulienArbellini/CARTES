@@ -178,6 +178,18 @@ function ensureFeatureCollection(data) {
 }
 
 function dissolveGroup(features) {
+  const normalizeGeometry = (geometry) => {
+    try {
+      const rewound = turf.rewind(turf.feature(geometry), {
+        mutate: false,
+        reverse: false
+      });
+      return rewound?.geometry || geometry;
+    } catch (err) {
+      return geometry;
+    }
+  };
+
   const sourceArea = features.reduce((sum, feature) => {
     try {
       return sum + turf.area(feature);
@@ -204,7 +216,7 @@ function dissolveGroup(features) {
   };
 
   if (features.length === 1) {
-    return features[0].geometry;
+    return normalizeGeometry(features[0].geometry);
   }
 
   try {
@@ -212,7 +224,7 @@ function dissolveGroup(features) {
     if (dissolved && Array.isArray(dissolved.features) && dissolved.features[0]?.geometry) {
       const geometry = dissolved.features[0].geometry;
       if (isReasonableGeometry(geometry)) {
-        return geometry;
+        return normalizeGeometry(geometry);
       }
     }
   } catch (err) {
@@ -239,15 +251,15 @@ function dissolveGroup(features) {
   }
 
   if (merged?.geometry && isReasonableGeometry(merged.geometry)) {
-    return merged.geometry;
+    return normalizeGeometry(merged.geometry);
   }
 
   const combined = turf.combine(turf.featureCollection(features));
   if (combined?.features?.[0]?.geometry) {
-    return combined.features[0].geometry;
+    return normalizeGeometry(combined.features[0].geometry);
   }
 
-  return features[0].geometry;
+  return normalizeGeometry(features[0].geometry);
 }
 
 function main() {

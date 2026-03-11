@@ -98,6 +98,8 @@ export default function GeoPreviewMap({
                 key={row.key}
                 d={row.d}
                 fill={row.fill}
+                fillRule="evenodd"
+                clipRule="evenodd"
                 stroke={row.isSelected ? '#3f3a33' : '#6e655a'}
                 strokeWidth={row.isSelected ? 1 : 0.45}
                 onMouseEnter={() => setHoverLabel(row.label)}
